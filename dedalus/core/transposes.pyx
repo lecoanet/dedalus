@@ -200,25 +200,51 @@ cdef class FFTWTranspose:
 
     def localize_rows(self, CL, RL):
         """Transpose from column-local to row-local data distribution."""
+        CL_reduced, RL_reduced = self.localize_rows_1(CL, RL)
+        self.localize_rows_2(CL_reduced)
+        self.localize_rows_3()
+        self.localize_rows_4(RL_reduced)
+
+    def localize_rows_1(self, CL, RL)
         # Create reduced views of data arrays
         CL_reduced = np.ndarray(shape=self.CL_reduced_shape, dtype=CL.dtype, buffer=CL)
         RL_reduced = np.ndarray(shape=self.RL_reduced_shape, dtype=RL.dtype, buffer=RL)
+        return CL_reduced, RL_reduced
+
+    def localize_rows_2(self, CL_reduced):
         # Transpose from input array to buffer
         np.copyto(self.CL_view, CL_reduced)
+
+    def localize_rows_3(self):
         # Communicate between buffers
         cfftw.fftw_execute(self.CL_to_RL_plan)
+
+    def localize_rows_4(self, RL_reduced):
         # Transpose from buffer to output array
         np.copyto(RL_reduced, self.RL_view)
 
     def localize_columns(self, RL, CL):
         """Transpose from row-local to column-local data distribution."""
+        CL_reduced, RL_reduced = self.localize_columns_1(CL, RL)
+        self.localize_columns_2(RL_reduced)
+        self.localize_columns_3()
+        self.localize_columns_4(CL_reduced)
+
+    def localize_columns_1(self, CL, RL):
         # Create reduced views of data arrays
         CL_reduced = np.ndarray(shape=self.CL_reduced_shape, dtype=CL.dtype, buffer=CL)
         RL_reduced = np.ndarray(shape=self.RL_reduced_shape, dtype=RL.dtype, buffer=RL)
+        return CL_reduced, RL_reduced
+
+    def localize_columns_2(self, RL_reduced):
         # Transpose from input array to buffer
         np.copyto(self.RL_view, RL_reduced)
+
+    def localize_columns_3(self):
         # Communicate between buffers
         cfftw.fftw_execute(self.RL_to_CL_plan)
+
+    def localize_columns_4(self, CL_reduced):
         # Transpose from buffer to output array
         np.copyto(CL_reduced, self.CL_view)
 
