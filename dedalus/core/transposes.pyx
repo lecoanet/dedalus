@@ -205,7 +205,7 @@ cdef class FFTWTranspose:
         self.localize_rows_3()
         self.localize_rows_4(RL_reduced)
 
-    def localize_rows_1(self, CL, RL)
+    def localize_rows_1(self, CL, RL):
         # Create reduced views of data arrays
         CL_reduced = np.ndarray(shape=self.CL_reduced_shape, dtype=CL.dtype, buffer=CL)
         RL_reduced = np.ndarray(shape=self.RL_reduced_shape, dtype=RL.dtype, buffer=RL)
