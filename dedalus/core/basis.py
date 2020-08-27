@@ -1196,20 +1196,25 @@ class SpinRecombinationBasis:
 
     def forward_spin_recombination(self, tensorsig, gdata, out=None):
         """Apply component-to-spin recombination."""
-        if out is None:
-            out = gdata
-        else:
-            # HACK: just copying the data so we can apply_matrix repeatedly
+        if not tensorsig:
             np.copyto(out, gdata)
-        if tensorsig:
+        else:
             U = self.spin_recombination_matrices(tensorsig)
             if gdata.dtype == np.complex128:
+                if out is None:
+                    out = gdata
+                else:
+                    # HACK: just copying the data so we can apply_matrix repeatedly
+                    np.copyto(out, gdata)
                 data = out
                 for i, Ui in enumerate(U):
                     if Ui is not None:
                         # Directly apply U
                         apply_matrix(Ui, data, axis=i, out=data)
             elif gdata.dtype == np.float64:
+                # We assume gdata and out are different data buffers
+                # transforms alternate between using these buffers as input vs output
+                # for an even number of transforms, we need a final copyto
                 num_recombinations = 0
                 for i, Ui in enumerate(U):
                         dim = Ui.shape[0]
@@ -1220,8 +1225,10 @@ class SpinRecombinationBasis:
                             input_view = reduced_view_5(out, i, self.axis+len(tensorsig))
                             output_view = reduced_view_5(gdata, i, self.axis+len(tensorsig))
                         if dim == 3:
+                            #self._recombine_forward_dim3(input_view, output_view)
                             spin_recombination.recombine_forward_dim3(input_view, output_view)
                         elif dim == 2:
+                            #self._recombine_forward_dim2(input_view, output_view)
                             spin_recombination.recombine_forward_dim2(input_view, output_view)
                         num_recombinations += 1
                 if num_recombinations % 2 == 0:
@@ -1229,20 +1236,25 @@ class SpinRecombinationBasis:
 
     def backward_spin_recombination(self, tensorsig, gdata, out=None):
         """Apply spin-to-component recombination."""
-        if out is None:
-            out = gdata
-        else:
-            # HACK: just copying the data so we can apply_matrix repeatedly
+        if not tensorsig:
             np.copyto(out, gdata)
-        if tensorsig:
+        else:
             U = self.spin_recombination_matrices(tensorsig)
             if gdata.dtype == np.complex128:
+                if out is None:
+                    out = gdata
+                else:
+                    # HACK: just copying the data so we can apply_matrix repeatedly
+                    np.copyto(out, gdata)
                 data = out
                 for i, Ui in enumerate(U):
                     if Ui is not None:
                         # Directly apply U
                         apply_matrix(Ui.T.conj(), data, axis=i, out=data)
             elif gdata.dtype == np.float64:
+                # We assume gdata and out are different data buffers
+                # transforms alternate between using these buffers as input vs output
+                # for an even number of transforms, we need a final copyto
                 num_recombinations = 0
                 for i, Ui in enumerate(U):
                         dim = Ui.shape[0]
@@ -1253,13 +1265,118 @@ class SpinRecombinationBasis:
                             input_view = reduced_view_5(out, i, self.axis+len(tensorsig))
                             output_view = reduced_view_5(gdata, i, self.axis+len(tensorsig))
                         if dim == 3:
-                            spin_recombination.recombine_backward_dim3(input_view, output_view)
+                            self._recombine_backward_dim3(input_view, output_view)
+                            #spin_recombination.recombine_backward_dim3(input_view, output_view)
                         elif dim == 2:
-                            spin_recombination.recombine_backward_dim2(input_view, output_view)
+                            self._recombine_backward_dim2(input_view, output_view)
+                            #spin_recombination.recombine_backward_dim2(input_view, output_view)
                         num_recombinations += 1
                 if num_recombinations % 2 == 0:
                     np.copyto(out, gdata)
 
+    def _recombine_forward_dim3(self, input, output):
+        data_cos = input[axslice(3, 0, None, 2)]
+        data_msin = input[axslice(3, 1, None, 2)]
+        out_cos = output[axslice(3, 0, None, 2)]
+        out_msin = output[axslice(3, 1, None, 2)]
+
+        data_cos0 = data_cos[:,0]
+        data_cos1 = data_cos[:,1]
+        data_msin0 = data_msin[:,0]
+        data_msin1 = data_msin[:,1]
+        out_cos0 = out_cos[:,0]
+        out_cos1 = out_cos[:,1]
+        out_msin0 = out_msin[:,0]
+        out_msin1 = out_msin[:,1]
+        inv_sqrt2 = 1 / np.sqrt(2)
+        # Recombination
+        np.add(data_cos1, data_msin0, out=out_cos0)
+        out_cos0 *= inv_sqrt2
+        np.subtract(data_cos1, data_msin0, out=out_cos1)
+        out_cos1 *= inv_sqrt2
+        np.copyto(out_cos[:,2], data_cos[:,2])
+        np.subtract(data_msin1, data_cos0, out=out_msin0)
+        out_msin0 *= inv_sqrt2
+        np.add(data_msin1, data_cos0, out=out_msin1)
+        out_msin1 *= inv_sqrt2
+        np.copyto(out_msin[:,2], data_msin[:,2])
+
+    def _recombine_forward_dim2(self, input, output):
+        data_cos = input[axslice(3, 0, None, 2)]
+        data_msin = input[axslice(3, 1, None, 2)]
+        out_cos = output[axslice(3, 0, None, 2)]
+        out_msin = output[axslice(3, 1, None, 2)]
+
+        data_cos0 = data_cos[:,0]
+        data_cos1 = data_cos[:,1]
+        data_msin0 = data_msin[:,0]
+        data_msin1 = data_msin[:,1]
+        out_cos0 = out_cos[:,0]
+        out_cos1 = out_cos[:,1]
+        out_msin0 = out_msin[:,0]
+        out_msin1 = out_msin[:,1]
+        inv_sqrt2 = 1 / np.sqrt(2)
+        # Recombination 
+        np.add(data_cos1, data_msin0, out=out_cos0)
+        out_cos0 *= inv_sqrt2
+        np.subtract(data_cos1, data_msin0, out=out_cos1)
+        out_cos1 *= inv_sqrt2
+        np.subtract(data_msin1, data_cos0, out=out_msin0)
+        out_msin0 *= inv_sqrt2
+        np.add(data_msin1, data_cos0, out=out_msin1)
+        out_msin1 *= inv_sqrt2
+
+    def _recombine_backward_dim3(self, input, output):
+        data_cos = input[axslice(3, 0, None, 2)]
+        data_msin = input[axslice(3, 1, None, 2)]
+        out_cos = output[axslice(3, 0, None, 2)]
+        out_msin = output[axslice(3, 1, None, 2)]
+
+        data_cos0 = data_cos[:,0]
+        data_cos1 = data_cos[:,1]
+        data_msin0 = data_msin[:,0]
+        data_msin1 = data_msin[:,1]
+        out_cos0 = out_cos[:,0]
+        out_cos1 = out_cos[:,1]
+        out_msin0 = out_msin[:,0]
+        out_msin1 = out_msin[:,1]
+        inv_sqrt2 = 1 / np.sqrt(2)
+        # Recombination 
+        np.subtract(data_msin1, data_msin0, out=out_cos0)
+        out_cos0 *= inv_sqrt2
+        np.add(data_cos0, data_cos1, out=out_cos1)
+        out_cos1 *= inv_sqrt2
+        np.copyto(out_cos[:,2], data_cos[:,2])
+        np.subtract(data_cos0, data_cos1, out=out_msin0)
+        out_msin0 *= inv_sqrt2
+        np.add(data_msin0, data_msin1, out=out_msin1)
+        out_msin1 *= inv_sqrt2
+        np.copyto(out_msin[:,2], data_msin[:,2])
+
+    def _recombine_backward_dim2(self, input, output):
+        data_cos = input[axslice(3, 0, None, 2)]
+        data_msin = input[axslice(3, 1, None, 2)]
+        out_cos = output[axslice(3, 0, None, 2)]
+        out_msin = output[axslice(3, 1, None, 2)]
+
+        data_cos0 = data_cos[:,0]
+        data_cos1 = data_cos[:,1]
+        data_msin0 = data_msin[:,0]
+        data_msin1 = data_msin[:,1]
+        out_cos0 = out_cos[:,0]
+        out_cos1 = out_cos[:,1]
+        out_msin0 = out_msin[:,0]
+        out_msin1 = out_msin[:,1]
+        inv_sqrt2 = 1 / np.sqrt(2)
+        # Recombination
+        np.subtract(data_msin1, data_msin0, out=out_cos0)
+        out_cos0 *= inv_sqrt2
+        np.add(data_cos0, data_cos1, out=out_cos1)
+        out_cos1 *= inv_sqrt2
+        np.subtract(data_cos0, data_cos1, out=out_msin0)
+        out_msin0 *= inv_sqrt2
+        np.add(data_msin0, data_msin1, out=out_msin1)
+        out_msin1 *= inv_sqrt2
 
 # These are common for S2 and D2
 class SpinBasis(MultidimensionalBasis, SpinRecombinationBasis):
