@@ -9,12 +9,14 @@ from scipy import sparse
 import itertools
 import operator
 import numbers
+import numexpr as ne
 from collections import defaultdict
 
 from .domain import Domain
 from .field import Operand, Field
 from .future import Future, FutureField
 from .operators import convert
+from .coords import SphericalCoordinates
 from ..tools.array import kron
 from ..tools.cache import CachedAttribute, CachedMethod
 from ..tools.dispatch import MultiClass
@@ -22,7 +24,7 @@ from ..tools.exceptions import NonlinearOperatorError
 from ..tools.exceptions import SymbolicParsingError
 from ..tools.exceptions import SkipDispatchException
 from ..tools.general import unify_attributes, DeferredTuple
-
+from ..libraries import cross
 
 def enum_indices(tensorsig):
     shape = tuple(cs.dim for cs in tensorsig)
@@ -598,6 +600,11 @@ class DotProduct(Product, FutureField):
 
         np.einsum(einsum_str,arg0.data,arg1.data,out=out.data)
 
+def reduced_view_2(data):
+    shape = data.shape
+    N0 = shape[0]
+    N1 = int(np.prod(shape[1:]))
+    return data.reshape((N0, N1))
 
 class CrossProduct(Product, FutureField):
 
@@ -621,9 +628,20 @@ class CrossProduct(Product, FutureField):
     def operate(self, out):
         arg0, arg1 = self.args
         out.set_layout(arg0.layout)
-        out.data[0] = self.epsilon(0,1,2)*(arg0.data[1]*arg1.data[2] - arg0.data[2]*arg1.data[1])
-        out.data[1] = self.epsilon(1,2,0)*(arg0.data[2]*arg1.data[0] - arg0.data[0]*arg1.data[2])
-        out.data[2] = self.epsilon(2,0,1)*(arg0.data[0]*arg1.data[1] - arg0.data[1]*arg1.data[0])
+        if isinstance(self.tensorsig[0], SphericalCoordinates):
+            #data0 = reduced_view_2(arg0.data)
+            #data1 = reduced_view_2(arg1.data)
+            #data_out = reduced_view_2(out.data)
+            #cross.product(data0, data1, data_out)
+            data00, data01, data02 = arg0.data[0], arg0.data[1], arg0.data[2]
+            data10, data11, data12 = arg1.data[0], arg1.data[1], arg1.data[2]
+            ne.evaluate("data02*data11 - data01*data12", out=out.data[0])
+            ne.evaluate("data00*data12 - data02*data10", out=out.data[1])
+            ne.evaluate("data01*data10 - data00*data11", out=out.data[2])
+        else:
+            out.data[0] = self.epsilon(0,1,2)*(arg0.data[1]*arg1.data[2] - arg0.data[2]*arg1.data[1])
+            out.data[1] = self.epsilon(1,2,0)*(arg0.data[2]*arg1.data[0] - arg0.data[0]*arg1.data[2])
+            out.data[2] = self.epsilon(2,0,1)*(arg0.data[0]*arg1.data[1] - arg0.data[1]*arg1.data[0])
 
 
 class Multiply(Product, metaclass=MultiClass):
