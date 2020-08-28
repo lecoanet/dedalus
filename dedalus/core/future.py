@@ -16,7 +16,7 @@ import logging
 logger = logging.getLogger(__name__.split('.')[-1])
 
 from ..tools.config import config
-STORE_OUTPUTS = config['memory'].getboolean('STORE_OUTPUTS')
+STORE_OUTPUTS = lambda: config['memory'].getboolean('STORE_OUTPUTS')
 
 class Future(Operand):
     """
@@ -55,6 +55,7 @@ class Future(Operand):
         self._coeff_layout = self.dist.coeff_layout
         self.last_id = None
         self.scales = 1 # self.domain.dealias
+        self.STORE_OUTPUTS = STORE_OUTPUTS()
 
     # @CachedAttribute
     # def domain(self):
@@ -205,7 +206,7 @@ class Future(Operand):
             return self.out
         else:
             out = self.build_out()
-            if STORE_OUTPUTS:
+            if self.STORE_OUTPUTS:
                 self.out = out
             return out
 
