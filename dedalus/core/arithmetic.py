@@ -24,12 +24,14 @@ from ..tools.exceptions import NonlinearOperatorError
 from ..tools.exceptions import SymbolicParsingError
 from ..tools.exceptions import SkipDispatchException
 from ..tools.general import unify_attributes, DeferredTuple
-from ..libraries import cross
+from ..libraries import arithmetic as arithmetic_library
 
 def enum_indices(tensorsig):
     shape = tuple(cs.dim for cs in tensorsig)
     return enumerate(np.ndindex(shape))
 
+from ..tools.config import config
+ARITHMETIC_LIBRARY = lambda: config['arithmetic']['ARITHMETIC_LIBRARY'].lower()
 
 class Add(Future, metaclass=MultiClass):
     """Addition operator."""
@@ -197,6 +199,7 @@ class AddFields(Add, FutureField):
         self.domain = Domain(self.dist, self._bases)
         self.tensorsig = unify_attributes(self.args, 'tensorsig')
         self.dtype = np.result_type(*[arg.dtype for arg in self.args])
+        self.ARITHMETIC_LIBRARY = ARITHMETIC_LIBRARY()
 
     def check_conditions(self):
         """Check that arguments are in a proper layout."""
@@ -223,11 +226,28 @@ class AddFields(Add, FutureField):
         args = self.args
         # Set output layout
         out.set_layout(args[0].layout)
-        # Add all argument data
-        args_data = [arg.data for arg in args]
-        # OPTIMIZE: less intermediate arrays?
-        np.copyto(out.data, reduce(np.add, args_data))
-
+        
+        if self.ARITHMETIC_LIBRARY == 'python':
+            # Add all argument data
+            args_data = [arg.data for arg in args]
+            # OPTIMIZE: less intermediate arrays?
+            np.copyto(out.data, reduce(np.add, args_data))
+        elif self.ARITHMETIC_LIBRARY == 'cython':
+            args0 = reduced_view_1(args[0].data)
+            args1 = reduced_view_1(args[1].data)
+            output = reduced_view_1(out.data)
+            arithmetic_library.sum(args0, args1, output)
+            for i in range(2, len(args)):
+                argsi = reduced_view_1(args[i].data)
+                arithmetic_library.sum_inplace(argsi, output)
+        else: # numexpre
+            args0 = args[0].data
+            args1 = args[1].data
+            output = out.data
+            ne.evaluate("args0 + args1", out=output)
+            for i in range(2, len(args)):
+                argsi = args[i].data
+                ne.evaluate("output + argsi", out=output)
 
 # used for einsum string manipulation
 alphabet = "abcdefghijklmnopqrstuvwxy"
@@ -600,6 +620,11 @@ class DotProduct(Product, FutureField):
 
         np.einsum(einsum_str,arg0.data,arg1.data,out=out.data)
 
+def reduced_view_1(data):
+    shape = data.shape
+    N = int(np.prod(shape))
+    return data.reshape((N))
+
 def reduced_view_2(data):
     shape = data.shape
     N0 = shape[0]
@@ -619,6 +644,7 @@ class CrossProduct(Product, FutureField):
         self.domain = Domain(arg0.dist, self._build_bases(arg0, arg1))
         self.tensorsig = arg0.tensorsig
         self.dtype = np.result_type(arg0.dtype, arg1.dtype)
+        self.ARITHMETIC_LIBRARY = ARITHMETIC_LIBRARY() 
 
     @CachedMethod
     def epsilon(self, i, j, k):
@@ -629,15 +655,28 @@ class CrossProduct(Product, FutureField):
         arg0, arg1 = self.args
         out.set_layout(arg0.layout)
         if isinstance(self.tensorsig[0], SphericalCoordinates):
-            #data0 = reduced_view_2(arg0.data)
-            #data1 = reduced_view_2(arg1.data)
-            #data_out = reduced_view_2(out.data)
-            #cross.product(data0, data1, data_out)
-            data00, data01, data02 = arg0.data[0], arg0.data[1], arg0.data[2]
-            data10, data11, data12 = arg1.data[0], arg1.data[1], arg1.data[2]
-            ne.evaluate("data02*data11 - data01*data12", out=out.data[0])
-            ne.evaluate("data00*data12 - data02*data10", out=out.data[1])
-            ne.evaluate("data01*data10 - data00*data11", out=out.data[2])
+            if self.ARITHMETIC_LIBRARY == 'python':
+                tmp = np.zeros_like(arg0.data[0])
+                np.multiply(arg0.data[2], arg1.data[1], out=out.data[0])
+                np.multiply(arg0.data[1], arg1.data[2], out=tmp)
+                np.subtract(out.data[0], tmp, out=out.data[0])
+                np.multiply(arg0.data[0], arg1.data[2], out=out.data[1])
+                np.multiply(arg0.data[2], arg1.data[0], out=tmp)
+                np.subtract(out.data[1], tmp, out=out.data[1])
+                np.multiply(arg0.data[1], arg1.data[0], out=out.data[2])
+                np.multiply(arg0.data[0], arg1.data[1], out=tmp)
+                np.subtract(out.data[2], tmp, out=out.data[2])
+            elif self.ARITHMETIC_LIBRARY == 'cython':
+                data0 = reduced_view_2(arg0.data)
+                data1 = reduced_view_2(arg1.data)
+                data_out = reduced_view_2(out.data)
+                arithmetic_library.cross_product(data0, data1, data_out)
+            else: # numexpr
+                data00, data01, data02 = arg0.data[0], arg0.data[1], arg0.data[2]
+                data10, data11, data12 = arg1.data[0], arg1.data[1], arg1.data[2]
+                ne.evaluate("data02*data11 - data01*data12", out=out.data[0])
+                ne.evaluate("data00*data12 - data02*data10", out=out.data[1])
+                ne.evaluate("data01*data10 - data00*data11", out=out.data[2])
         else:
             out.data[0] = self.epsilon(0,1,2)*(arg0.data[1]*arg1.data[2] - arg0.data[2]*arg1.data[1])
             out.data[1] = self.epsilon(1,2,0)*(arg0.data[2]*arg1.data[0] - arg0.data[0]*arg1.data[2])
@@ -775,6 +814,7 @@ class MultiplyNumberField(Multiply, FutureField):
         self.domain = arg1.domain
         self.tensorsig = arg1.tensorsig
         self.dtype = np.result_type(type(arg0), arg1.dtype)
+        self.ARITHMETIC_LIBRARY = ARITHMETIC_LIBRARY()
 
     @classmethod
     def _check_args(cls, *args, **kw):
@@ -798,7 +838,15 @@ class MultiplyNumberField(Multiply, FutureField):
         # Set output layout
         out.set_layout(arg1.layout)
         # Multiply all argument data, reshaped by tensorsig
-        np.multiply(arg0, arg1.data, out=out.data)
+        if self.ARITHMETIC_LIBRARY == 'python':
+            np.multiply(arg0, arg1.data, out=out.data)
+        elif self.ARITHMETIC_LIBRARY == 'cython':
+            input = reduced_view_1(arg1.data)
+            output = reduced_view_1(out.data)
+            arithmetic_library.num_field_product(arg0, input, output)
+        else: # numexpr
+            data1 = arg1.data
+            ne.evaluate("arg0*data1", out=out.data)
 
     def matrix_dependence(self, *vars):
         return self.args[1].matrix_dependence(*vars)
