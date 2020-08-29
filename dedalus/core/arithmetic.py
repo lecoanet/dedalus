@@ -200,6 +200,12 @@ class AddFields(Add, FutureField):
         self.tensorsig = unify_attributes(self.args, 'tensorsig')
         self.dtype = np.result_type(*[arg.dtype for arg in self.args])
         self.ARITHMETIC_LIBRARY = ARITHMETIC_LIBRARY()
+        if self.ARITHMETIC_LIBRARY == 'numexpr':
+            expression = "arg0"
+            for i in range(1, len(args)):
+                expression += "+arg%i"%i
+            self.expression = expression
+            self.var_dict={}
 
     def check_conditions(self):
         """Check that arguments are in a proper layout."""
@@ -240,14 +246,12 @@ class AddFields(Add, FutureField):
             for i in range(2, len(args)):
                 argsi = reduced_view_1(args[i].data)
                 arithmetic_library.sum_inplace(argsi, output)
-        else: # numexpre
-            args0 = args[0].data
-            args1 = args[1].data
-            output = out.data
-            ne.evaluate("args0 + args1", out=output)
-            for i in range(2, len(args)):
-                argsi = args[i].data
-                ne.evaluate("output + argsi", out=output)
+        elif self.ARITHMETIC_LIBRARY == 'numexpr':
+            for i, arg in enumerate(args):
+                self.var_dict["arg%i"%i] = arg.data
+            ne.evaluate(self.expression, local_dict=self.var_dict, out=out.data)
+        else:
+            raise NotImplementedError("ARITHMETIC_LIBRARY must be python, cython, or numexpr")
 
 # used for einsum string manipulation
 alphabet = "abcdefghijklmnopqrstuvwxy"
@@ -618,7 +622,7 @@ class DotProduct(Product, FutureField):
 
         einsum_str = array0_str + '...,' + array1_str + '...->' + out_str + '...'
 
-        np.einsum(einsum_str,arg0.data,arg1.data,out=out.data)
+        np.einsum(einsum_str,arg0.data,arg1.data,out=out.data,optimize=True)
 
 def reduced_view_1(data):
     shape = data.shape
@@ -671,12 +675,15 @@ class CrossProduct(Product, FutureField):
                 data1 = reduced_view_2(arg1.data)
                 data_out = reduced_view_2(out.data)
                 arithmetic_library.cross_product(data0, data1, data_out)
-            else: # numexpr
+            elif self.ARITHMETIC_LIBRARY == 'numexpr':
                 data00, data01, data02 = arg0.data[0], arg0.data[1], arg0.data[2]
                 data10, data11, data12 = arg1.data[0], arg1.data[1], arg1.data[2]
                 ne.evaluate("data02*data11 - data01*data12", out=out.data[0])
                 ne.evaluate("data00*data12 - data02*data10", out=out.data[1])
                 ne.evaluate("data01*data10 - data00*data11", out=out.data[2])
+            else:
+                raise NotImplementedError("ARITHMETIC_LIBRARY must be python, cython, or numexpr")
+
         else:
             out.data[0] = self.epsilon(0,1,2)*(arg0.data[1]*arg1.data[2] - arg0.data[2]*arg1.data[1])
             out.data[1] = self.epsilon(1,2,0)*(arg0.data[2]*arg1.data[0] - arg0.data[0]*arg1.data[2])
@@ -779,6 +786,7 @@ class MultiplyFields(Multiply, FutureField):
         self.tensorsig = arg0.tensorsig + arg1.tensorsig
         self.dtype = np.result_type(arg0.dtype, arg1.dtype)
         self.gamma_args = []
+        self.ARITHMETIC_LIBRARY = ARITHMETIC_LIBRARY()
 
     def operate(self, out):
         """Perform operation."""
@@ -796,8 +804,15 @@ class MultiplyFields(Multiply, FutureField):
             shape[start_index: start_index + arg_order] = arg_shape[:arg_order]
             args_data.append(arg.data.reshape(shape))
             start_index += arg_order
-        # OPTIMIZE: less intermediate arrays?
-        np.copyto(out.data, reduce(np.multiply, args_data))
+        if self.ARITHMETIC_LIBRARY == 'numexpr':
+            arg0 = args[0].data
+            arg1 = args[1].data
+            ne.evaluate("arg0*arg1", out=out.data)
+        else:
+            # python or cython (haven't written a cython version yet)
+            # OPTIMIZE: less intermediate arrays?
+            #np.copyto(out.data, reduce(np.multiply, args_data))
+            np.multiply(args_data[0], args_data[1], out.data)
 
 
 class MultiplyNumberField(Multiply, FutureField):
