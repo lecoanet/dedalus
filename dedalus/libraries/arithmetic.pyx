@@ -25,6 +25,16 @@ def num_field_product(double number, double [::1] input, double [::1] output):
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
+def sum_product_inplace(double number, double [::1] input, double [::1] output):
+
+    cdef int size = input.shape[0]
+    cdef int i
+
+    for i in range(size):
+        output[i] = output[i] + number*input[i]
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
 def sum(double [::1] data0, double [::1] data1, double [::1] output):
 
     cdef int size = data0.shape[0]
