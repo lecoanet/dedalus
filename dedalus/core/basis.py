@@ -2324,11 +2324,8 @@ class SphericalShellRadialBasis(RegularityBasis):
         # Multiply by radial factor
         if self.k > 0:
             gdata *= self.radial_transform_factor(field.scales[axis], data_axis, -self.k)
-        # HACK -- don't want to make a new array every transform
-        temp = np.zeros_like(cdata)
         # Apply recombinations
-        self.forward_spin_recombination(field.tensorsig, gdata, out=temp)
-        self.forward_regularity_recombination(field.tensorsig, axis, temp)
+        self.forward_regularity_recombination(field.tensorsig, axis, gdata)
         # Perform radial transforms component-by-component
         R = self.regularity_classes(field.tensorsig)
         for regindex, regtotal in np.ndenumerate(R):
@@ -2345,9 +2342,9 @@ class SphericalShellRadialBasis(RegularityBasis):
         for i, r in np.ndenumerate(R):
            plan = self.transform_plan(grid_size, self.k)
            plan.backward(cdata[i], temp[i], axis)
-        # Apply recombinations
-        self.backward_regularity_recombination(field.tensorsig, axis, temp, out=gdata)
-        self.backward_spin_recombination(field.tensorsig, gdata)
+        np.copyto(gdata, temp)
+        # Regularity recombination
+        self.backward_regularity_recombination(field.tensorsig, axis, gdata)
         # Multiply by radial factor
         if self.k > 0:
             gdata *= self.radial_transform_factor(field.scales[axis], data_axis, self.k)
@@ -2507,11 +2504,10 @@ class BallRadialBasis(RegularityBasis):
         """Build transform plan."""
         return self.transforms[self.radius_library](grid_shape, self.Nmax+1, axis, self.ell_maps, regindex, regtotal, k, alpha)
 
-    def forward_transform(self, field, axis, gdata, cdata):
+    def forward_transform_radius(self, field, axis, gdata, cdata):
         temp = np.zeros_like(cdata)
         # Apply recombination
-        self.forward_spin_recombination(field.tensorsig, gdata, out=temp)
-        self.forward_regularity_recombination(field.tensorsig, axis, temp)
+        self.forward_regularity_recombination(field.tensorsig, axis, gdata)
         # Perform radial transforms component-by-component
         R = self.regularity_classes(field.tensorsig)
         for regindex, regtotal in np.ndenumerate(R):
@@ -2530,7 +2526,6 @@ class BallRadialBasis(RegularityBasis):
            plan.backward(cdata[regindex], temp[regindex], axis)
         # Apply recombinations
         self.backward_regularity_recombination(field.tensorsig, axis, temp, out=gdata)
-        self.backward_spin_recombination(field.tensorsig, gdata)
 
     @CachedMethod
     def operator_matrix(self,op,l,deg):
