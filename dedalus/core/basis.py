@@ -10,6 +10,7 @@ from functools import reduce
 import operator
 
 from . import operators
+from ..libraries import spin_recombination
 from ..tools.array import axslice
 from ..tools.array import apply_matrix
 from ..tools.array import permute_axis
@@ -1156,6 +1157,16 @@ class MultidimensionalBasis(Basis):
         return self.backward_transforms[subaxis](field, axis, cdata, gdata)
 
 
+def reduced_view_5(data, axis1, axis2):
+    shape = data.shape
+    N0 = int(np.prod(shape[:axis1]))
+    N1 = shape[axis1]
+    N2 = int(np.prod(shape[axis1+1:axis2]))
+    N3 = shape[axis2]
+    N4 = int(np.prod(shape[axis2+1:]))
+    return data.reshape((N0, N1, N2, N3, N4))
+
+
 class SpinRecombinationBasis:
 
     @CachedMethod
@@ -1199,17 +1210,22 @@ class SpinRecombinationBasis:
                         # Directly apply U
                         apply_matrix(Ui, data, axis=i, out=data)
             elif gdata.dtype == np.float64:
-                data_cos = out[axslice(self.axis+len(tensorsig), 0, None, 2)]
-                data_msin = out[axslice(self.axis+len(tensorsig), 1, None, 2)]  # minus sine coefficient
+                num_recombinations = 0
                 for i, Ui in enumerate(U):
-                    if Ui is not None:
-                        # Apply U split up into real and imaginary pieces
-                        RC = apply_matrix(Ui.real, data_cos, axis=i)
-                        RmS = apply_matrix(Ui.real, data_msin, axis=i)
-                        IC = apply_matrix(Ui.imag, data_cos, axis=i)
-                        ImS = apply_matrix(Ui.imag, data_msin, axis=i)
-                        data_cos[:] = RC - ImS
-                        data_msin[:] = RmS + IC
+                        dim = Ui.shape[0]
+                        if num_recombinations % 2 == 0:
+                            input_view = reduced_view_5(gdata, i, self.axis+len(tensorsig))
+                            output_view = reduced_view_5(out, i, self.axis+len(tensorsig))
+                        else:
+                            input_view = reduced_view_5(out, i, self.axis+len(tensorsig))
+                            output_view = reduced_view_5(gdata, i, self.axis+len(tensorsig))
+                        if dim == 3:
+                            spin_recombination.recombine_forward_dim3(input_view, output_view)
+                        elif dim == 2:
+                            spin_recombination.recombine_forward_dim2(input_view, output_view)
+                        num_recombinations += 1
+                if num_recombinations % 2 == 0:
+                    np.copyto(out, gdata)
 
     def backward_spin_recombination(self, tensorsig, gdata, out=None):
         """Apply spin-to-component recombination."""
@@ -1227,18 +1243,22 @@ class SpinRecombinationBasis:
                         # Directly apply U
                         apply_matrix(Ui.T.conj(), data, axis=i, out=data)
             elif gdata.dtype == np.float64:
-                data_cos = out[axslice(self.axis+len(tensorsig), 0, None, 2)]
-                data_msin = out[axslice(self.axis+len(tensorsig), 1, None, 2)]  # minus sine coefficient
+                num_recombinations = 0
                 for i, Ui in enumerate(U):
-                    if Ui is not None:
-                        # Apply U split up into real and imaginary pieces
-                        Ui_inv = Ui.T.conj()
-                        RC = apply_matrix(Ui_inv.real, data_cos, axis=i)
-                        RmS = apply_matrix(Ui_inv.real, data_msin, axis=i)
-                        IC = apply_matrix(Ui_inv.imag, data_cos, axis=i)
-                        ImS = apply_matrix(Ui_inv.imag, data_msin, axis=i)
-                        data_cos[:] = RC - ImS
-                        data_msin[:] = RmS + IC
+                        dim = Ui.shape[0]
+                        if num_recombinations % 2 == 0:
+                            input_view = reduced_view_5(gdata, i, self.axis+len(tensorsig))
+                            output_view = reduced_view_5(out, i, self.axis+len(tensorsig))
+                        else:
+                            input_view = reduced_view_5(out, i, self.axis+len(tensorsig))
+                            output_view = reduced_view_5(gdata, i, self.axis+len(tensorsig))
+                        if dim == 3:
+                            spin_recombination.recombine_backward_dim3(input_view, output_view)
+                        elif dim == 2:
+                            spin_recombination.recombine_backward_dim2(input_view, output_view)
+                        num_recombinations += 1
+                if num_recombinations % 2 == 0:
+                    np.copyto(out, gdata)
 
 
 # These are common for S2 and D2
@@ -2187,16 +2207,16 @@ class SphericalShellRadialBasis(RegularityBasis):
         # Multiply by radial factor
         if self.k > 0:
             gdata *= self.radial_transform_factor(field.scales[axis], data_axis, -self.k)
-        # Regularity recombination
-        self.forward_regularity_recombination(field.tensorsig, axis, gdata)
+        # HACK -- don't want to make a new array every transform
+        temp = np.zeros_like(cdata)
+        # Apply recombinations
+        self.forward_spin_recombination(field.tensorsig, gdata, out=temp)
+        self.forward_regularity_recombination(field.tensorsig, axis, temp)
         # Perform radial transforms component-by-component
         R = self.regularity_classes(field.tensorsig)
-        # HACK -- don't want to make a new array every transform
-        temp = np.copy(cdata)
         for regindex, regtotal in np.ndenumerate(R):
            plan = self.transform_plan(grid_size, self.k)
-           plan.forward(gdata[regindex], temp[regindex], axis)
-        np.copyto(cdata, temp)
+           plan.forward(temp[regindex], cdata[regindex], axis)
 
     def backward_transform_radius(self, field, axis, cdata, gdata):
         data_axis = len(field.tensorsig) + axis
@@ -2204,13 +2224,13 @@ class SphericalShellRadialBasis(RegularityBasis):
         # Perform radial transforms component-by-component
         R = self.regularity_classes(field.tensorsig)
         # HACK -- don't want to make a new array every transform
-        temp = np.copy(gdata)
+        temp = np.zeros_like(gdata)
         for i, r in np.ndenumerate(R):
            plan = self.transform_plan(grid_size, self.k)
            plan.backward(cdata[i], temp[i], axis)
-        np.copyto(gdata, temp)
-        # Regularity recombination
-        self.backward_regularity_recombination(field.tensorsig, axis, gdata)
+        # Apply recombinations
+        self.backward_regularity_recombination(field.tensorsig, axis, temp, out=gdata)
+        self.backward_spin_recombination(field.tensorsig, gdata)
         # Multiply by radial factor
         if self.k > 0:
             gdata *= self.radial_transform_factor(field.scales[axis], data_axis, self.k)
@@ -2370,31 +2390,30 @@ class BallRadialBasis(RegularityBasis):
         """Build transform plan."""
         return self.transforms[self.radius_library](grid_shape, self.Nmax+1, axis, self.ell_maps, regindex, regtotal, k, alpha)
 
-    def forward_transform_radius(self, field, axis, gdata, cdata):
-        # Regularity recombination
-        self.forward_regularity_recombination(field.tensorsig, axis, gdata)
+    def forward_transform(self, field, axis, gdata, cdata):
+        temp = np.zeros_like(cdata)
+        # Apply recombination
+        self.forward_spin_recombination(field.tensorsig, gdata, out=temp)
+        self.forward_regularity_recombination(field.tensorsig, axis, temp)
         # Perform radial transforms component-by-component
         R = self.regularity_classes(field.tensorsig)
-        # HACK -- don't want to make a new array every transform
-        temp = np.copy(cdata)
         for regindex, regtotal in np.ndenumerate(R):
            grid_shape = gdata[regindex].shape
            plan = self.transform_plan(grid_shape, regindex, axis, regtotal, self.k, self.alpha)
-           plan.forward(gdata[regindex], temp[regindex], axis)
-        np.copyto(cdata, temp)
+           plan.forward(temp[regindex], cdata[regindex], axis)
 
     def backward_transform_radius(self, field, axis, cdata, gdata):
         # Perform radial transforms component-by-component
         R = self.regularity_classes(field.tensorsig)
         # HACK -- don't want to make a new array every transform
-        temp = np.copy(gdata)
+        temp = np.zeros_like(gdata)
         for regindex, regtotal in np.ndenumerate(R):
            grid_shape = gdata[regindex].shape
            plan = self.transform_plan(grid_shape, regindex, axis, regtotal, self.k, self.alpha)
            plan.backward(cdata[regindex], temp[regindex], axis)
-        np.copyto(gdata, temp)
-        # Regularity recombination
-        self.backward_regularity_recombination(field.tensorsig, axis, gdata)
+        # Apply recombinations
+        self.backward_regularity_recombination(field.tensorsig, axis, temp, out=gdata)
+        self.backward_spin_recombination(field.tensorsig, gdata)
 
     @CachedMethod
     def operator_matrix(self,op,l,deg):
